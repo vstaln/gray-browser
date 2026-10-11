@@ -115,7 +115,15 @@ fn browser_fetch(a: &Value) -> Result<String, String> {
         },
     };
     let text = if a["raw"].as_bool().unwrap_or(false) { dom } else { strip_tags(&dom) };
-    Ok(if text.len() > max { format!("{}…[{max}-char cap]", &text[..max]) } else { text })
+    Ok(if text.len() > max {
+        let mut end = max;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}…[{max}-char cap]", &text[..end])
+    } else {
+        text
+    })
 }
 
 fn browser_shot(a: &Value) -> Result<Value, String> {
@@ -215,6 +223,10 @@ fn main() {
     match args.first().map(String::as_str) {
         Some("manifest") => println!("{}", manifest()),
         Some("sidecar") => { let _ = sidecar(); }
+        Some("-h" | "--help" | "help") => {
+            println!("browser — headless chromium tools (fetch/shot/pdf). backend: {}",
+                chrome().unwrap_or_else(|| "NONE — install chromium".into()));
+        }
         _ => {
             if args.is_empty() {
                 if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
