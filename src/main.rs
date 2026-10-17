@@ -64,6 +64,13 @@ fn run_deadline(bin: &str, args: &[String]) -> Result<std::process::Output, Stri
     }
 }
 
+const BLOCK_TAGS: &[&str] = &[
+    "p", "br", "hr", "div", "li", "ul", "ol", "tr", "td", "th", "table",
+    "h1", "h2", "h3", "h4", "h5", "h6", "section", "article", "header",
+    "footer", "nav", "aside", "blockquote", "pre", "title", "form",
+    "figure", "figcaption", "main",
+];
+
 fn strip_tags(html: &str) -> String {
     let mut out = String::with_capacity(html.len() / 2);
     let mut in_tag = false;
@@ -72,9 +79,14 @@ fn strip_tags(html: &str) -> String {
     let mut word = String::new();
     while let Some(c) = it.next() {
         if in_tag {
-            if c == '>' { in_tag = false; 
+            if c == '>' { in_tag = false;
                 if word.starts_with("script") || word.starts_with("style") { depth_skip += 1; }
                 if word.starts_with("/script") || word.starts_with("/style") { depth_skip -= 1; }
+                let name = word.trim_start_matches('/')
+                    .split(|c: char| !c.is_ascii_alphanumeric()).next().unwrap_or("");
+                if depth_skip <= 0 && BLOCK_TAGS.contains(&name) {
+                    out.push(' ');
+                }
                 word.clear();
             } else if word.len() < 16 { word.push(c); }
             continue;
