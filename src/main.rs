@@ -104,14 +104,22 @@ fn browser_fetch(a: &Value) -> Result<String, String> {
             }
             dom
         }
-        // No browser: plain GET still works for server-rendered pages.
+        // No browser: plain GET still works for server-rendered pages —
+        // say so up front, the caller asked for a rendered DOM.
         None => match ureq::get(url)
             .set("User-Agent", "gray-browser/0.1 (no-js fetch)")
             .timeout(std::time::Duration::from_secs(20)).call() {
-            Ok(r) => r.into_string().map_err(|e| e.to_string())?,
+            Ok(r) => format!("[no chromium — plain GET, JS not rendered]\n{}",
+                r.into_string().map_err(|e| e.to_string())?),
             Err(ureq::Error::Status(c, _)) =>
                 return Err(format!("HTTP {c}")),
-            Err(e) => return Err(e.to_string()),
+            Err(ureq::Error::Transport(t)) => {
+                let detail = std::error::Error::source(&t)
+                    .map(|s| s.to_string())
+                    .or_else(|| t.message().map(str::to_string))
+                    .unwrap_or_else(|| format!("{:?}", t.kind()));
+                return Err(format!("cannot reach {url}: {detail}"));
+            }
         },
     };
     let text = if a["raw"].as_bool().unwrap_or(false) { dom } else { strip_tags(&dom) };
