@@ -186,6 +186,37 @@ fn tool(name: &str, args: &Value) -> Value {
     }
 }
 
+fn usage() -> String {
+    format!("browser — headless chromium tools. backend: {}\n  \
+        browser status            backend probe\n  \
+        browser fetch <url>       rendered DOM text\n  \
+        browser shot <url> [w h]  screenshot → PNG path\n  \
+        browser pdf <url>         print → PDF path",
+        chrome().unwrap_or_else(|| "NONE — install chromium".into()))
+}
+
+fn cli(argv: &[String]) -> Result<String, String> {
+    match argv.first().map(String::as_str) {
+        None | Some("status") => Ok(format!("browser backend: {}",
+            chrome().unwrap_or_else(|| "NONE".into()))),
+        Some("fetch") => {
+            let url = argv.get(1).ok_or("usage: browser fetch <url>")?;
+            browser_fetch(&json!({"url": url}))
+        }
+        Some("shot") | Some("screenshot") => {
+            let url = argv.get(1).ok_or("usage: browser shot <url>")?;
+            browser_shot(&json!({"url": url})).map(|v|
+                v["content"].as_str().unwrap_or("done").to_string())
+        }
+        Some("pdf") => {
+            let url = argv.get(1).ok_or("usage: browser pdf <url>")?;
+            browser_pdf(&json!({"url": url}))
+        }
+        Some("-h" | "--help" | "help") => Ok(usage()),
+        Some(other) => Err(format!("unknown verb {other}\n{}", usage())),
+    }
+}
+
 fn sidecar() -> std::io::Result<()> {
     let stdin = std::io::stdin();
     let mut out = std::io::stdout().lock();
@@ -203,8 +234,12 @@ fn sidecar() -> std::io::Result<()> {
                     let mut r = tool(v["params"]["name"].as_str().unwrap_or(""), &v["params"]["args"]);
                     r["id"] = id; r
                 } else if method == "command/run" {
-                    let s = chrome().unwrap_or_else(|| "NONE".into());
-                    json!({"id": id, "result": {"text": format!("browser backend: {s}")}})
+                    let argv: Vec<String> = v["params"]["argv"].as_array()
+                        .map(|a| a.iter().filter_map(Value::as_str)
+                            .map(str::to_string).collect())
+                        .unwrap_or_default();
+                    let text = cli(&argv).unwrap_or_else(|e| e);
+                    json!({"id": id, "result": {"text": text}})
                 } else {
                     json!({"id": id, "error": {"code": -32601,
                         "message": format!("method not found: {method}")}})
@@ -223,20 +258,18 @@ fn main() {
     match args.first().map(String::as_str) {
         Some("manifest") => println!("{}", manifest()),
         Some("sidecar") => { let _ = sidecar(); }
-        Some("-h" | "--help" | "help") => {
-            println!("browser — headless chromium tools (fetch/shot/pdf). backend: {}",
-                chrome().unwrap_or_else(|| "NONE — install chromium".into()));
-        }
         _ => {
             if args.is_empty() {
                 if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-                    println!("browser — headless chromium tools (fetch/shot/pdf). backend: {}",
-                        chrome().unwrap_or_else(|| "NONE — install chromium".into()));
+                    println!("{}", usage());
                     return;
                 }
                 let _ = sidecar(); return;
             }
-            eprintln!("unknown verb"); std::process::exit(1);
+            match cli(&args) {
+                Ok(t) => println!("{t}"),
+                Err(e) => { eprintln!("{e}"); std::process::exit(1); }
+            }
         }
     }
 }
