@@ -14,19 +14,19 @@ fn manifest() -> Value {
         "name": NAME, "display_name": "Browser",
         "version": env!("CARGO_PKG_VERSION"), "protocol": "1.1",
         "tools": [
-            {"name": "browser_fetch",
+            {"name": "browser_fetch", "label": "Browsed", "preview": "{url}",
              "description": "Fetch a URL in a real headless browser and return the rendered DOM text. Use when web_fetch fails on JS-heavy pages.",
              "parameters": {"type": "object", "properties": {
                 "url": {"type": "string"},
                 "raw": {"type": "boolean", "description": "Return raw HTML instead of stripped text."},
                 "max_chars": {"type": "integer"}}, "required": ["url"]}},
-            {"name": "browser_shot",
+            {"name": "browser_shot", "label": "Screenshot", "preview": "{url}",
              "description": "Screenshot a URL with headless Chromium; returns the PNG path (cat it to view).",
              "parameters": {"type": "object", "properties": {
                 "url": {"type": "string"},
                 "width": {"type": "integer"}, "height": {"type": "integer"},
                 "path": {"type": "string"}}, "required": ["url"]}},
-            {"name": "browser_pdf",
+            {"name": "browser_pdf", "label": "Saved PDF", "preview": "{url} · {path}",
              "description": "Print a URL to PDF via headless Chromium; returns the file path.",
              "parameters": {"type": "object", "properties": {
                 "url": {"type": "string"}, "path": {"type": "string"}},
