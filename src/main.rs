@@ -33,6 +33,7 @@ fn manifest() -> Value {
              "required": ["url"]}},
         ],
         "commands": ["/browser"], "subcommands": ["browser"],
+        "command_descriptions": {"/browser": "drive the browser: open, click, read pages"},
     })
 }
 
