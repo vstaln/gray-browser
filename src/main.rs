@@ -14,25 +14,26 @@ fn manifest() -> Value {
         "name": NAME, "display_name": "Browser",
         "version": env!("CARGO_PKG_VERSION"), "protocol": "1.1",
         "tools": [
-            {"name": "browser_fetch",
+            {"name": "browser_fetch", "label": "Browsed", "preview": "{url}",
              "description": "Fetch a URL in a real headless browser and return the rendered DOM text. Use when web_fetch fails on JS-heavy pages.",
              "parameters": {"type": "object", "properties": {
                 "url": {"type": "string"},
                 "raw": {"type": "boolean", "description": "Return raw HTML instead of stripped text."},
                 "max_chars": {"type": "integer"}}, "required": ["url"]}},
-            {"name": "browser_shot",
+            {"name": "browser_shot", "label": "Screenshot", "preview": "{url}",
              "description": "Screenshot a URL with headless Chromium; returns the PNG path (cat it to view).",
              "parameters": {"type": "object", "properties": {
                 "url": {"type": "string"},
                 "width": {"type": "integer"}, "height": {"type": "integer"},
                 "path": {"type": "string"}}, "required": ["url"]}},
-            {"name": "browser_pdf",
+            {"name": "browser_pdf", "label": "Saved PDF", "preview": "{url} · {path}",
              "description": "Print a URL to PDF via headless Chromium; returns the file path.",
              "parameters": {"type": "object", "properties": {
                 "url": {"type": "string"}, "path": {"type": "string"}},
              "required": ["url"]}},
         ],
         "commands": ["/browser"], "subcommands": ["browser"],
+        "command_descriptions": {"/browser": "drive the browser: open, click, read pages"},
     })
 }
 
@@ -64,6 +65,13 @@ fn run_deadline(bin: &str, args: &[String]) -> Result<std::process::Output, Stri
     }
 }
 
+const BLOCK_TAGS: &[&str] = &[
+    "p", "br", "hr", "div", "li", "ul", "ol", "tr", "td", "th", "table",
+    "h1", "h2", "h3", "h4", "h5", "h6", "section", "article", "header",
+    "footer", "nav", "aside", "blockquote", "pre", "title", "form",
+    "figure", "figcaption", "main",
+];
+
 fn strip_tags(html: &str) -> String {
     let mut out = String::with_capacity(html.len() / 2);
     let mut in_tag = false;
@@ -72,9 +80,14 @@ fn strip_tags(html: &str) -> String {
     let mut word = String::new();
     while let Some(c) = it.next() {
         if in_tag {
-            if c == '>' { in_tag = false; 
+            if c == '>' { in_tag = false;
                 if word.starts_with("script") || word.starts_with("style") { depth_skip += 1; }
                 if word.starts_with("/script") || word.starts_with("/style") { depth_skip -= 1; }
+                let name = word.trim_start_matches('/')
+                    .split(|c: char| !c.is_ascii_alphanumeric()).next().unwrap_or("");
+                if depth_skip <= 0 && BLOCK_TAGS.contains(&name) {
+                    out.push(' ');
+                }
                 word.clear();
             } else if word.len() < 16 { word.push(c); }
             continue;
@@ -104,14 +117,22 @@ fn browser_fetch(a: &Value) -> Result<String, String> {
             }
             dom
         }
-        // No browser: plain GET still works for server-rendered pages.
+        // No browser: plain GET still works for server-rendered pages —
+        // say so up front, the caller asked for a rendered DOM.
         None => match ureq::get(url)
             .set("User-Agent", "gray-browser/0.1 (no-js fetch)")
             .timeout(std::time::Duration::from_secs(20)).call() {
-            Ok(r) => r.into_string().map_err(|e| e.to_string())?,
+            Ok(r) => format!("[no chromium — plain GET, JS not rendered]\n{}",
+                r.into_string().map_err(|e| e.to_string())?),
             Err(ureq::Error::Status(c, _)) =>
                 return Err(format!("HTTP {c}")),
-            Err(e) => return Err(e.to_string()),
+            Err(ureq::Error::Transport(t)) => {
+                let detail = std::error::Error::source(&t)
+                    .map(|s| s.to_string())
+                    .or_else(|| t.message().map(str::to_string))
+                    .unwrap_or_else(|| format!("{:?}", t.kind()));
+                return Err(format!("cannot reach {url}: {detail}"));
+            }
         },
     };
     let text = if a["raw"].as_bool().unwrap_or(false) { dom } else { strip_tags(&dom) };
@@ -186,6 +207,37 @@ fn tool(name: &str, args: &Value) -> Value {
     }
 }
 
+fn usage() -> String {
+    format!("browser — headless chromium tools. backend: {}\n  \
+        browser status            backend probe\n  \
+        browser fetch <url>       rendered DOM text\n  \
+        browser shot <url> [w h]  screenshot → PNG path\n  \
+        browser pdf <url>         print → PDF path",
+        chrome().unwrap_or_else(|| "NONE — install chromium".into()))
+}
+
+fn cli(argv: &[String]) -> Result<String, String> {
+    match argv.first().map(String::as_str) {
+        None | Some("status") => Ok(format!("browser backend: {}",
+            chrome().unwrap_or_else(|| "NONE".into()))),
+        Some("fetch") => {
+            let url = argv.get(1).ok_or("usage: browser fetch <url>")?;
+            browser_fetch(&json!({"url": url}))
+        }
+        Some("shot") | Some("screenshot") => {
+            let url = argv.get(1).ok_or("usage: browser shot <url>")?;
+            browser_shot(&json!({"url": url})).map(|v|
+                v["content"].as_str().unwrap_or("done").to_string())
+        }
+        Some("pdf") => {
+            let url = argv.get(1).ok_or("usage: browser pdf <url>")?;
+            browser_pdf(&json!({"url": url}))
+        }
+        Some("-h" | "--help" | "help") => Ok(usage()),
+        Some(other) => Err(format!("unknown verb {other}\n{}", usage())),
+    }
+}
+
 fn sidecar() -> std::io::Result<()> {
     let stdin = std::io::stdin();
     let mut out = std::io::stdout().lock();
@@ -203,8 +255,12 @@ fn sidecar() -> std::io::Result<()> {
                     let mut r = tool(v["params"]["name"].as_str().unwrap_or(""), &v["params"]["args"]);
                     r["id"] = id; r
                 } else if method == "command/run" {
-                    let s = chrome().unwrap_or_else(|| "NONE".into());
-                    json!({"id": id, "result": {"text": format!("browser backend: {s}")}})
+                    let argv: Vec<String> = v["params"]["argv"].as_array()
+                        .map(|a| a.iter().filter_map(Value::as_str)
+                            .map(str::to_string).collect())
+                        .unwrap_or_default();
+                    let text = cli(&argv).unwrap_or_else(|e| e);
+                    json!({"id": id, "result": {"text": text}})
                 } else {
                     json!({"id": id, "error": {"code": -32601,
                         "message": format!("method not found: {method}")}})
@@ -223,20 +279,18 @@ fn main() {
     match args.first().map(String::as_str) {
         Some("manifest") => println!("{}", manifest()),
         Some("sidecar") => { let _ = sidecar(); }
-        Some("-h" | "--help" | "help") => {
-            println!("browser — headless chromium tools (fetch/shot/pdf). backend: {}",
-                chrome().unwrap_or_else(|| "NONE — install chromium".into()));
-        }
         _ => {
             if args.is_empty() {
                 if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-                    println!("browser — headless chromium tools (fetch/shot/pdf). backend: {}",
-                        chrome().unwrap_or_else(|| "NONE — install chromium".into()));
+                    println!("{}", usage());
                     return;
                 }
                 let _ = sidecar(); return;
             }
-            eprintln!("unknown verb"); std::process::exit(1);
+            match cli(&args) {
+                Ok(t) => println!("{t}"),
+                Err(e) => { eprintln!("{e}"); std::process::exit(1); }
+            }
         }
     }
 }
