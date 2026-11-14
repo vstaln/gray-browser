@@ -1,10 +1,10 @@
 //! browser — headless-Chromium tools: rendered fetch, screenshot, PDF.
 //! Spawns chromium/chrome CLI; a per-call watchdog kills stalls.
 
+use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
-use serde_json::{json, Value};
 
 const NAME: &str = "browser";
 const TIMEOUT: Duration = Duration::from_secs(45);
@@ -32,16 +32,29 @@ fn manifest() -> Value {
                 "url": {"type": "string"}, "path": {"type": "string"}},
              "required": ["url"]}},
         ],
+        "description": "drive the headless browser",
         "commands": ["/browser"], "subcommands": ["browser"],
         "command_descriptions": {"/browser": "drive the browser: open, click, read pages"},
     })
 }
 
 fn chrome() -> Option<String> {
-    for b in ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable",
-              "chrome", "brave-browser"] {
-        if Command::new(b).arg("--version").stdout(Stdio::null()).stderr(Stdio::null())
-            .status().map(|s| s.success()).unwrap_or(false) {
+    for b in [
+        "chromium",
+        "chromium-browser",
+        "google-chrome",
+        "google-chrome-stable",
+        "chrome",
+        "brave-browser",
+    ] {
+        if Command::new(b)
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
             return Some(b.to_string());
         }
     }
@@ -49,9 +62,12 @@ fn chrome() -> Option<String> {
 }
 
 fn run_deadline(bin: &str, args: &[String]) -> Result<std::process::Output, String> {
-    let mut child = Command::new(bin).args(args)
-        .stdout(Stdio::piped()).stderr(Stdio::piped())
-        .spawn().map_err(|e| format!("spawn {bin}: {e}"))?;
+    let mut child = Command::new(bin)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("spawn {bin}: {e}"))?;
     let start = Instant::now();
     loop {
         if let Some(_code) = child.try_wait().map_err(|e| e.to_string())? {
@@ -66,10 +82,36 @@ fn run_deadline(bin: &str, args: &[String]) -> Result<std::process::Output, Stri
 }
 
 const BLOCK_TAGS: &[&str] = &[
-    "p", "br", "hr", "div", "li", "ul", "ol", "tr", "td", "th", "table",
-    "h1", "h2", "h3", "h4", "h5", "h6", "section", "article", "header",
-    "footer", "nav", "aside", "blockquote", "pre", "title", "form",
-    "figure", "figcaption", "main",
+    "p",
+    "br",
+    "hr",
+    "div",
+    "li",
+    "ul",
+    "ol",
+    "tr",
+    "td",
+    "th",
+    "table",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "section",
+    "article",
+    "header",
+    "footer",
+    "nav",
+    "aside",
+    "blockquote",
+    "pre",
+    "title",
+    "form",
+    "figure",
+    "figcaption",
+    "main",
 ];
 
 fn strip_tags(html: &str) -> String {
@@ -80,23 +122,40 @@ fn strip_tags(html: &str) -> String {
     let mut word = String::new();
     while let Some(c) = it.next() {
         if in_tag {
-            if c == '>' { in_tag = false;
-                if word.starts_with("script") || word.starts_with("style") { depth_skip += 1; }
-                if word.starts_with("/script") || word.starts_with("/style") { depth_skip -= 1; }
-                let name = word.trim_start_matches('/')
-                    .split(|c: char| !c.is_ascii_alphanumeric()).next().unwrap_or("");
+            if c == '>' {
+                in_tag = false;
+                if word.starts_with("script") || word.starts_with("style") {
+                    depth_skip += 1;
+                }
+                if word.starts_with("/script") || word.starts_with("/style") {
+                    depth_skip -= 1;
+                }
+                let name = word
+                    .trim_start_matches('/')
+                    .split(|c: char| !c.is_ascii_alphanumeric())
+                    .next()
+                    .unwrap_or("");
                 if depth_skip <= 0 && BLOCK_TAGS.contains(&name) {
                     out.push(' ');
                 }
                 word.clear();
-            } else if word.len() < 16 { word.push(c); }
+            } else if word.len() < 16 {
+                word.push(c);
+            }
             continue;
         }
-        if c == '<' { in_tag = true; word.clear();
-            if it.peek() == Some(&'/') { word.push('/'); it.next(); }
+        if c == '<' {
+            in_tag = true;
+            word.clear();
+            if it.peek() == Some(&'/') {
+                word.push('/');
+                it.next();
+            }
             continue;
         }
-        if depth_skip <= 0 { out.push(c); }
+        if depth_skip <= 0 {
+            out.push(c);
+        }
     }
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -107,13 +166,26 @@ fn browser_fetch(a: &Value) -> Result<String, String> {
     let dom = match chrome() {
         // Full path: headless chromium renders JS and dumps the DOM.
         Some(bin) => {
-            let out = run_deadline(&bin, &[
-                "--headless=new".into(), "--disable-gpu".into(), "--no-sandbox".into(),
-                "--disable-dev-shm-usage".into(), "--dump-dom".into(), url.into()])?;
+            let out = run_deadline(
+                &bin,
+                &[
+                    "--headless=new".into(),
+                    "--disable-gpu".into(),
+                    "--no-sandbox".into(),
+                    "--disable-dev-shm-usage".into(),
+                    "--dump-dom".into(),
+                    url.into(),
+                ],
+            )?;
             let dom = String::from_utf8_lossy(&out.stdout).to_string();
             if dom.trim().is_empty() {
-                return Err(format!("empty DOM: {}",
-                    String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("")));
+                return Err(format!(
+                    "empty DOM: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                        .lines()
+                        .last()
+                        .unwrap_or("")
+                ));
             }
             dom
         }
@@ -121,11 +193,14 @@ fn browser_fetch(a: &Value) -> Result<String, String> {
         // say so up front, the caller asked for a rendered DOM.
         None => match ureq::get(url)
             .set("User-Agent", "gray-browser/0.1 (no-js fetch)")
-            .timeout(std::time::Duration::from_secs(20)).call() {
-            Ok(r) => format!("[no chromium — plain GET, JS not rendered]\n{}",
-                r.into_string().map_err(|e| e.to_string())?),
-            Err(ureq::Error::Status(c, _)) =>
-                return Err(format!("HTTP {c}")),
+            .timeout(std::time::Duration::from_secs(20))
+            .call()
+        {
+            Ok(r) => format!(
+                "[no chromium — plain GET, JS not rendered]\n{}",
+                r.into_string().map_err(|e| e.to_string())?
+            ),
+            Err(ureq::Error::Status(c, _)) => return Err(format!("HTTP {c}")),
             Err(ureq::Error::Transport(t)) => {
                 let detail = std::error::Error::source(&t)
                     .map(|s| s.to_string())
@@ -135,7 +210,11 @@ fn browser_fetch(a: &Value) -> Result<String, String> {
             }
         },
     };
-    let text = if a["raw"].as_bool().unwrap_or(false) { dom } else { strip_tags(&dom) };
+    let text = if a["raw"].as_bool().unwrap_or(false) {
+        dom
+    } else {
+        strip_tags(&dom)
+    };
     Ok(if text.len() > max {
         let mut end = max;
         while !text.is_char_boundary(end) {
@@ -152,14 +231,26 @@ fn browser_shot(a: &Value) -> Result<Value, String> {
     let bin = chrome().ok_or("no chromium/chrome binary found")?;
     let dir = state_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = a["path"].as_str().map(str::to_string).unwrap_or_else(||
-        dir.join(format!("shot-{}.png", std::process::id())).display().to_string());
+    let path = a["path"].as_str().map(str::to_string).unwrap_or_else(|| {
+        dir.join(format!("shot-{}.png", std::process::id()))
+            .display()
+            .to_string()
+    });
     let w = a["width"].as_u64().unwrap_or(1280);
     let h = a["height"].as_u64().unwrap_or(900);
-    run_deadline(&bin, &[
-        "--headless=new".into(), "--disable-gpu".into(), "--no-sandbox".into(),
-        "--disable-dev-shm-usage".into(), "--hide-scrollbars".into(),
-        format!("--window-size={w},{h}"), format!("--screenshot={path}"), url.into()])?;
+    run_deadline(
+        &bin,
+        &[
+            "--headless=new".into(),
+            "--disable-gpu".into(),
+            "--no-sandbox".into(),
+            "--disable-dev-shm-usage".into(),
+            "--hide-scrollbars".into(),
+            format!("--window-size={w},{h}"),
+            format!("--screenshot={path}"),
+            url.into(),
+        ],
+    )?;
     if !std::path::Path::new(&path).exists() {
         return Err("chromium produced no screenshot".into());
     }
@@ -172,18 +263,33 @@ fn browser_pdf(a: &Value) -> Result<String, String> {
     let bin = chrome().ok_or("no chromium/chrome binary found")?;
     let dir = state_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = a["path"].as_str().map(str::to_string).unwrap_or_else(||
-        dir.join(format!("page-{}.pdf", std::process::id())).display().to_string());
-    run_deadline(&bin, &[
-        "--headless=new".into(), "--disable-gpu".into(), "--no-sandbox".into(),
-        "--disable-dev-shm-usage".into(), format!("--print-to-pdf={path}"),
-        "--no-pdf-header-footer".into(), url.into()])?;
-    if std::path::Path::new(&path).exists() { Ok(format!("pdf → {path}")) }
-    else { Err("chromium produced no pdf".into()) }
+    let path = a["path"].as_str().map(str::to_string).unwrap_or_else(|| {
+        dir.join(format!("page-{}.pdf", std::process::id()))
+            .display()
+            .to_string()
+    });
+    run_deadline(
+        &bin,
+        &[
+            "--headless=new".into(),
+            "--disable-gpu".into(),
+            "--no-sandbox".into(),
+            "--disable-dev-shm-usage".into(),
+            format!("--print-to-pdf={path}"),
+            "--no-pdf-header-footer".into(),
+            url.into(),
+        ],
+    )?;
+    if std::path::Path::new(&path).exists() {
+        Ok(format!("pdf → {path}"))
+    } else {
+        Err("chromium produced no pdf".into())
+    }
 }
 
 fn state_dir() -> std::path::PathBuf {
-    let home = std::env::var_os("GRAY_HOME").map(std::path::PathBuf::from)
+    let home = std::env::var_os("GRAY_HOME")
+        .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".gray")))
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     home.join("browser")
@@ -208,26 +314,30 @@ fn tool(name: &str, args: &Value) -> Value {
 }
 
 fn usage() -> String {
-    format!("browser — headless chromium tools. backend: {}\n  \
+    format!(
+        "browser — headless chromium tools. backend: {}\n  \
         browser status            backend probe\n  \
         browser fetch <url>       rendered DOM text\n  \
         browser shot <url> [w h]  screenshot → PNG path\n  \
         browser pdf <url>         print → PDF path",
-        chrome().unwrap_or_else(|| "NONE — install chromium".into()))
+        chrome().unwrap_or_else(|| "NONE — install chromium".into())
+    )
 }
 
 fn cli(argv: &[String]) -> Result<String, String> {
     match argv.first().map(String::as_str) {
-        None | Some("status") => Ok(format!("browser backend: {}",
-            chrome().unwrap_or_else(|| "NONE".into()))),
+        None | Some("status") => Ok(format!(
+            "browser backend: {}",
+            chrome().unwrap_or_else(|| "NONE".into())
+        )),
         Some("fetch") => {
             let url = argv.get(1).ok_or("usage: browser fetch <url>")?;
             browser_fetch(&json!({"url": url}))
         }
         Some("shot") | Some("screenshot") => {
             let url = argv.get(1).ok_or("usage: browser shot <url>")?;
-            browser_shot(&json!({"url": url})).map(|v|
-                v["content"].as_str().unwrap_or("done").to_string())
+            browser_shot(&json!({"url": url}))
+                .map(|v| v["content"].as_str().unwrap_or("done").to_string())
         }
         Some("pdf") => {
             let url = argv.get(1).ok_or("usage: browser pdf <url>")?;
@@ -243,7 +353,9 @@ fn sidecar() -> std::io::Result<()> {
     let mut out = std::io::stdout().lock();
     for line in stdin.lock().lines() {
         let line = line?;
-        let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
         let method = v["method"].as_str().unwrap_or("");
         match v.get("id").cloned() {
             None if method == "plugin/shutdown" => return Ok(()),
@@ -252,12 +364,21 @@ fn sidecar() -> std::io::Result<()> {
                 let reply = if method == "plugin/manifest" {
                     json!({"id": id, "result": manifest()})
                 } else if method == "tool/call" {
-                    let mut r = tool(v["params"]["name"].as_str().unwrap_or(""), &v["params"]["args"]);
-                    r["id"] = id; r
+                    let mut r = tool(
+                        v["params"]["name"].as_str().unwrap_or(""),
+                        &v["params"]["args"],
+                    );
+                    r["id"] = id;
+                    r
                 } else if method == "command/run" {
-                    let argv: Vec<String> = v["params"]["argv"].as_array()
-                        .map(|a| a.iter().filter_map(Value::as_str)
-                            .map(str::to_string).collect())
+                    let argv: Vec<String> = v["params"]["argv"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_string)
+                                .collect()
+                        })
                         .unwrap_or_default();
                     let text = cli(&argv).unwrap_or_else(|e| e);
                     json!({"id": id, "result": {"text": text}})
@@ -265,7 +386,8 @@ fn sidecar() -> std::io::Result<()> {
                     json!({"id": id, "error": {"code": -32601,
                         "message": format!("method not found: {method}")}})
                 };
-                writeln!(out, "{reply}")?; out.flush()?;
+                writeln!(out, "{reply}")?;
+                out.flush()?;
             }
         }
     }
@@ -275,21 +397,29 @@ fn sidecar() -> std::io::Result<()> {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<String> = match args.first().map(String::as_str) {
-        Some("browser") => args[1..].to_vec(), _ => args };
+        Some("browser") => args[1..].to_vec(),
+        _ => args,
+    };
     match args.first().map(String::as_str) {
         Some("manifest") => println!("{}", manifest()),
-        Some("sidecar") => { let _ = sidecar(); }
+        Some("sidecar") => {
+            let _ = sidecar();
+        }
         _ => {
             if args.is_empty() {
                 if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
                     println!("{}", usage());
                     return;
                 }
-                let _ = sidecar(); return;
+                let _ = sidecar();
+                return;
             }
             match cli(&args) {
                 Ok(t) => println!("{t}"),
-                Err(e) => { eprintln!("{e}"); std::process::exit(1); }
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
             }
         }
     }
