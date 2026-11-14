@@ -32,6 +32,7 @@ fn manifest() -> Value {
                 "url": {"type": "string"}, "path": {"type": "string"}},
              "required": ["url"]}},
         ],
+        "description": "drive the headless browser",
         "commands": ["/browser"], "subcommands": ["browser"],
         "command_descriptions": {"/browser": "drive the browser: open, click, read pages"},
     })
